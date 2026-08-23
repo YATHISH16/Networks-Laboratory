@@ -1,0 +1,97 @@
+1) Add Binary
+
+char* addBinary(char* a, char* b) {
+    int lenA = strlen(a);
+    int lenB = strlen(b);
+
+    int maxLen = (lenA > lenB ? lenA : lenB) + 1;
+    char* result = (char*)malloc((maxLen + 1) * sizeof(char));
+    if (result == NULL) return NULL;
+    
+    result[maxLen] = '\0';
+    
+    int i = lenA - 1;
+    int j = lenB - 1;
+    int k = maxLen - 1;
+    int carry = 0;
+
+    while (i >= 0 || j >= 0 || carry > 0) {
+        int sum = carry;
+        
+        if (i >= 0) {
+            sum += a[i] - '0';
+            i--;
+        }
+        if (j >= 0) {
+            sum += b[j] - '0'; 
+            j--;
+        }
+
+        result[k] = (sum % 2) + '0';
+        carry = sum / 2;
+        k--;
+    }
+
+    if (k == 0) {
+        memmove(result, result + 1, maxLen);
+    }
+    
+    return result;
+}
+
+2) Binary Number with Alternating Bits
+
+bool hasAlternatingBits(int n) {
+
+    unsigned int shifted = n >> 1;
+    unsigned int xorResult = n ^ shifted;
+    return (xorResult & (xorResult + 1)) == 0;
+}
+
+3)  Bitwise ORs of Subarrays
+
+int compare(const void* a, const void* b) {
+    return (*(int*)a - *(int*)b);
+}
+
+int subarrayBitwiseORs(int* arr, int arrSize) {
+    if (arrSize == 0) return 0;
+    int prev_results[32];
+    int curr_results[32];
+    int prev_size = 0;
+
+    int max_possible_total = arrSize * 32;
+    int* all_results = (int*)malloc(max_possible_total * sizeof(int));
+    int all_size = 0;
+
+    for (int i = 0; i < arrSize; i++) {
+        int curr_size = 0;
+        curr_results[curr_size++] = arr[i];
+        
+        for (int j = 0; j < prev_size; j++) {
+            int new_or = prev_results[j] | arr[i];
+            if (new_or != curr_results[curr_size - 1]) {
+                curr_results[curr_size++] = new_or;
+            }
+        }
+        
+        for (int j = 0; j < curr_size; j++) {
+            all_results[all_size++] = curr_results[j];
+            prev_results[j] = curr_results[j];
+        }
+        prev_size = curr_size;
+    }
+    qsort(all_results, all_size, sizeof(int), compare);
+    int unique_count = (all_size > 0) ? 1 : 0;
+    for (int i = 1; i < all_size; i++) {
+        if (all_results[i] != all_results[i - 1]) {
+            unique_count++;
+        }
+    }
+    free(all_results);
+
+    return unique_count;
+}
+
+
+

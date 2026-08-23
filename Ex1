@@ -1,0 +1,60 @@
+1) Number Complement
+
+int findComplement(int num) {
+    if (num == 0) return 1;
+    
+    unsigned int mask = 0;
+    int temp = num;
+    
+    while (temp > 0) {
+        mask = (mask << 1) | 1;
+        temp >>= 1;
+    }
+    return num ^ mask;
+}
+
+2) Counting Bits
+
+int* countBits(int n, int* returnSize) {
+    *returnSize = n + 1;
+    
+    int* ans = (int*)malloc((*returnSize) * sizeof(int));
+    if (ans == NULL) return NULL; 
+    
+    ans[0] = 0;
+    for (int i = 1; i <= n; i++) {
+        ans[i] = ans[i / 2] + (i % 2);
+    }
+    
+    return ans;
+}
+
+3) Maximum XOR of Two Numbers in an Array
+
+int findMaximumXOR(int* nums, int numsSize){
+    int maxResult = 0;
+    int mask = 0;
+
+    for (int i = 30; i >= 0; i--) {
+        mask |= (1 << i);
+        int greedyCandidate = maxResult | (1 << i);
+        bool found = false;
+        for (int j = 0; j < numsSize; j++) {
+            int prefix = nums[j] & mask;
+            int target = prefix ^ greedyCandidate;
+            
+            for (int k = 0; k < numsSize; k++) {
+                if ((nums[k] & mask) == target) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        if (found) {
+            maxResult = greedyCandidate;
+        }
+    }
+
+    return maxResult;
+}

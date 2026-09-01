@@ -1,0 +1,219 @@
+815)
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+typedef struct {
+    int stop;
+    int bus;
+} StopBusPair;
+
+int comparePairs(const void* a, const void* b) {
+    StopBusPair* p1 = (StopBusPair*)a;
+    StopBusPair* p2 = (StopBusPair*)b;
+    return p1->stop - p2->stop;
+}
+
+int numBusesToDestination(int** routes, int routesSize, int* routesColSize, int source, int target) {
+    if (source == target) {
+        return 0;
+    }
+
+    int totalElements = 0;
+    for (int i = 0; i < routesSize; i++) {
+        totalElements += routesColSize[i];
+    }
+
+    StopBusPair* pairs = (StopBusPair*)malloc(totalElements * sizeof(StopBusPair));
+    int pairIdx = 0;
+    for (int i = 0; i < routesSize; i++) {
+        for (int j = 0; j < routesColSize[i]; j++) {
+            pairs[pairIdx].stop = routes[i][j];
+            pairs[pairIdx].bus = i;
+            pairIdx++;
+        }
+    }
+
+    qsort(pairs, totalElements, sizeof(StopBusPair), comparePairs);
+
+    void findStopRange(int stop, int* start, int* end) {
+        int low = 0, high = totalElements - 1;
+        int foundIdx = -1;
+        while (low <= high) {
+            int mid = low + (high - low) / 2;
+            if (pairs[mid].stop == stop) {
+                foundIdx = mid;
+                break;
+            } else if (pairs[mid].stop < stop) {
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        if (foundIdx == -1) {
+            *start = -1;
+            *end = -1;
+            return;
+        }
+        int s = foundIdx;
+        while (s > 0 && pairs[s - 1].stop == stop) s--;
+        int e = foundIdx;
+        while (e < totalElements - 1 && pairs[e + 1].stop == stop) e++;
+        *start = s;
+        *end = e;
+    }
+
+    bool* visitedBuses = (bool*)calloc(routesSize, sizeof(bool));
+    bool* visitedPairs = (bool*)calloc(totalElements, sizeof(bool));
+    int* queue = (int*)malloc(routesSize * sizeof(int));
+    int head = 0, tail = 0;
+
+    int srcStart, srcEnd;
+    findStopRange(source, &srcStart, &srcEnd);
+    if (srcStart == -1) {
+        free(pairs); free(visitedBuses); free(visitedPairs); free(queue);
+        return -1;
+    }
+
+    for (int i = srcStart; i <= srcEnd; i++) {
+        int b = pairs[i].bus;
+        if (!visitedBuses[b]) {
+            visitedBuses[b] = true;
+            queue[tail++] = b;
+        }
+    }
+
+    int busCount = 1;
+    while (head < tail) {
+        int levelSize = tail - head;
+        for (int i = 0; i < levelSize; i++) {
+            int currBus = queue[head++];
+            for (int j = 0; j < routesColSize[currBus]; j++) {
+                int stop = routes[currBus][j];
+
+                if (stop == target) {
+                    free(pairs); free(visitedBuses); free(visitedPairs); free(queue);
+                    return busCount;
+                }
+                int st, ed;
+                findStopRange(stop, &st, &ed);
+                if (st != -1) {
+                    for (int k = st; k <= ed; k++) {
+                        if (!visitedPairs[k]) {
+                            visitedPairs[k] = true;
+                            int nextBus = pairs[k].bus;
+                            if (!visitedBuses[nextBus]) {
+                                visitedBuses[nextBus] = true;
+                                queue[tail++] = nextBus;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        busCount++;
+    }
+    free(pairs);
+    free(visitedBuses);
+    free(visitedPairs);
+    free(queue);
+
+    return -1; 
+}
+
+
+743)
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define INF 1e9
+
+int networkDelayTime(int** times, int timesSize, int* timesColSize, int n, int k) {
+    int* dist = (int*)malloc((n + 1) * sizeof(int));
+    bool* visited = (bool*)calloc((n + 1), sizeof(bool));
+   
+    for (int i = 1; i <= n; i++) {
+        dist[i] = INF;
+    }
+    dist[k] = 0; // Distance to the source node itself is 0
+
+    for (int count = 1; count <= n; count++) {
+        int u = -1;
+        int minDist = INF;
+        for (int i = 1; i <= n; i++) {
+            if (!visited[i] && dist[i] < minDist) {
+                minDist = dist[i];
+                u = i;
+            }
+        }
+        if (u == -1) break;
+        visited[u] = true;
+        for (int i = 0; i < timesSize; i++) {
+            int source = times[i][0];
+            int target = times[i][1];
+            int travelTime = times[i][2];
+
+            if (source == u && !visited[target]) {
+                if (dist[u] + travelTime < dist[target]) {
+                    dist[target] = dist[u] + travelTime;
+                }
+            }
+        }
+    }
+    int maxDelay = 0;
+    for (int i = 1; i <= n; i++) {
+        if (dist[i] == INF) {
+            free(dist);
+            free(visited);
+            return -1;
+        }
+        if (dist[i] > maxDelay) {
+            maxDelay = dist[i];
+        }
+    }
+    free(dist);
+    free(visited);
+
+    return maxDelay;
+}
+
+
+787)
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define INF 1e9
+
+int findCheapestPrice(int n, int** flights, int flightsSize, int* flightsColSize, int src, int dst, int k) {
+    int* prices = (int*)malloc(n * sizeof(int));
+    int* tempPrices = (int*)malloc(n * sizeof(int));
+    for (int i = 0; i < n; i++) {
+        prices[i] = INF;
+    }
+    prices[src] = 0; // Cost to start at the source is 0
+
+    for (int i = 0; i <= k; i++) {
+        memcpy(tempPrices, prices, n * sizeof(int));
+        for (int j = 0; j < flightsSize; j++) {
+            int u = flights[j][0];
+            int v = flights[j][1];   
+            int price = flights[j][2]; 
+            if (prices[u] != INF) {
+                if (prices[u] + price < tempPrices[v]) {
+                    tempPrices[v] = prices[u] + price;
+                }
+            }
+        }
+        memcpy(prices, tempPrices, n * sizeof(int));
+    }
+
+    int result = prices[dst];
+
+    free(prices);
+    free(tempPrices);
+
+    return (result == INF) ? -1 : result;
+}
+

@@ -1,0 +1,32 @@
+461)
+int hammingDistance(int x, int y) {
+    int dist = 0;
+    int val = x ^ y;
+    while (val != 0) {
+        ++dist;
+        val &= val - 1;
+    }
+    return dist;
+}
+
+
+477)
+int totalHammingDistance(int* nums, int numsSize) {
+    int total_dist = 0;
+   
+    for (int i = 0; i < 32; ++i) {
+        int count_ones = 0;
+       
+        for (int j = 0; j < numsSize; ++j) {
+            if ((nums[j] >> i) & 1) {
+                count_ones++;
+            }
+        }
+       
+        int count_zeros = numsSize - count_ones;
+
+        total_dist += count_ones * count_zeros;
+    }
+   
+    return total_dist;
+}

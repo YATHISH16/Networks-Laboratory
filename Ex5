@@ -1,0 +1,103 @@
+239. Sliding Window Maximum
+
+int* maxSlidingWindow(int* nums, int numsSize, int k, int* returnSize) {
+    if (numsSize == 0 || k == 0) {
+        *returnSize = 0;
+        return NULL;
+    }
+
+    *returnSize = numsSize - k + 1;
+    int* result = (int*)malloc((*returnSize) * sizeof(int));
+    
+
+    int* deque = (int*)malloc(numsSize * sizeof(int));
+    int head = 0; // Pointer to the front of the deque
+    int tail = 0; // Pointer to the back of the deque
+    int resIdx = 0;
+
+    for (int i = 0; i < numsSize; i++) {
+        if (head < tail && deque[head] < i - k + 1) {
+            head++;
+        }
+        while (head < tail && nums[deque[tail - 1]] < nums[i]) {
+            tail--;
+        }
+        deque[tail++] = i;
+        if (i >= k - 1) {
+            result[resIdx++] = nums[deque[head]];
+        }
+    }
+
+    free(deque);
+    
+    return result;
+}
+
+
+480. Sliding Window Median
+
+
+int findPosition(int* arr, int size, int target) {
+    int low = 0, high = size - 1;
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (arr[mid] == target) {
+            return mid;
+        } else if (arr[mid] < target) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return low;
+}
+
+int compareInts(const void* a, const void* b) {
+    int arg1 = *(const int*)a;
+    int arg2 = *(const int*)b;
+    if (arg1 < arg2) return -1;
+    if (arg1 > arg2) return 1;
+    return 0;
+}
+
+double* medianSlidingWindow(int* nums, int numsSize, int k, int* returnSize) {
+    if (numsSize == 0 || k == 0) {
+        *returnSize = 0;
+        return NULL;
+    }
+
+    *returnSize = numsSize - k + 1;
+    double* result = (double*)malloc((*returnSize) * sizeof(double));
+    
+
+    int* window = (int*)malloc(k * sizeof(int));
+    memcpy(window, nums, k * sizeof(int));
+    
+
+    qsort(window, k, sizeof(int), compareInts);
+
+    int resIdx = 0;
+    
+    for (int i = k; ; i++) {
+        if (k % 2 != 0) {
+            result[resIdx++] = (double)window[k / 2];
+        } else {
+
+            result[resIdx++] = ((double)window[k / 2 - 1] + (double)window[k / 2]) / 2.0;
+        }
+
+        if (i == numsSize) break;
+
+        int oldVal = nums[i - k];
+        int removePos = findPosition(window, k, oldVal);
+ 
+        memmove(&window[removePos], &window[removePos + 1], (k - removePos - 1) * sizeof(int));
+        int newVal = nums[i];
+        int insertPos = findPosition(window, k - 1, newVal);
+        memmove(&window[insertPos + 1], &window[insertPos], (k - insertPos - 1) * sizeof(int));
+        window[insertPos] = newVal;
+    }
+
+    free(window);
+    return result;
+}

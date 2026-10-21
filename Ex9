@@ -1,0 +1,1553 @@
+client.c
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 5000
+#define BUFFER_SIZE 4096
+#define NAME_SIZE 256
+#define SERVER_IP "172.16.16.200" //"127.0.0.1"
+
+int send_all(int sock, const void *data, size_t size)
+{
+    const char *p = data;
+    size_t sent = 0;
+
+    while (sent < size)
+    {
+        ssize_t n = send(sock, p + sent, size - sent, 0);
+
+        if (n <= 0)
+            return -1;
+
+        sent += n;
+    }
+
+    return 0;
+}
+
+int recv_exact(int sock, void *data, size_t size)
+{
+    char *p = data;
+    size_t received = 0;
+
+    while (received < size)
+    {
+        ssize_t n = recv(sock, p + received,
+                         size - received, 0);
+
+        if (n <= 0)
+            return -1;
+
+        received += n;
+    }
+
+    return 0;
+}
+
+int read_line(int sock, char *buf, size_t size)
+{
+    size_t i = 0;
+    char c;
+
+    while (i < size - 1)
+    {
+        ssize_t n = recv(sock, &c, 1, 0);
+
+        if (n <= 0)
+            return -1;
+
+        if (c == '\n')
+            break;
+
+        buf[i++] = c;
+    }
+
+    buf[i] = '\0';
+    return 0;
+}
+
+int valid_filename(const char *name)
+{
+    if (name[0] == '\0' || strcmp(name, ".") == 0 ||
+        strcmp(name, "..") == 0)
+        return 0;
+
+    if (strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL)
+        return 0;
+
+    return 1;
+}
+
+int receive_file(int sock, FILE *fp, long long size)
+{
+    char buffer[BUFFER_SIZE];
+
+    while (size > 0)
+    {
+        size_t amount = size > BUFFER_SIZE
+                        ? BUFFER_SIZE : (size_t)size;
+
+        if (recv_exact(sock, buffer, amount) < 0)
+            return -1;
+
+        if (fwrite(buffer, 1, amount, fp) != amount)
+            return -1;
+
+        size -= amount;
+    }
+
+    return 0;
+}
+
+int main()
+{
+    int socid, ch;
+    struct sockaddr_in addr;
+    char filename[NAME_SIZE];
+    char line[128];
+
+    socid = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (socid < 0)
+    {
+        perror("Socket");
+        return 1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+
+    if (inet_pton(AF_INET, SERVER_IP, &addr.sin_addr) <= 0)
+    {
+        printf("Invalid server IP address\n");
+        close(socid);
+        return 1;
+    }
+
+    if (connect(socid, (struct sockaddr *)&addr,
+                sizeof(addr)) < 0)
+    {
+        perror("Connection failed");
+        close(socid);
+        return 1;
+    }
+
+    printf("Enter your choice:\n");
+    printf("1. Retrieve file from server\n");
+    printf("2. Transfer file to server\n");
+    printf("Choice: ");
+
+    if (scanf("%d", &ch) != 1 || (ch != 1 && ch != 2))
+    {
+        printf("Invalid choice\n");
+        close(socid);
+        return 1;
+    }
+
+    printf("Enter file name: ");
+
+    if (scanf("%255s", filename) != 1 ||
+        !valid_filename(filename))
+    {
+        printf("Invalid file name\n");
+        close(socid);
+        return 1;
+    }
+
+    /* Send the choice and filename as newline-terminated text. */
+    snprintf(line, sizeof(line), "%d\n", ch);
+
+    if (send_all(socid, line, strlen(line)) < 0 ||
+        send_all(socid, filename, strlen(filename)) < 0 ||
+        send_all(socid, "\n", 1) < 0)
+    {
+        printf("Failed to send request\n");
+        close(socid);
+        return 1;
+    }
+
+    if (ch == 1)
+    {
+        /* Retrieve a file from the server. */
+        if (read_line(socid, line, sizeof(line)) < 0)
+        {
+            printf("Server disconnected\n");
+            close(socid);
+            return 1;
+        }
+
+        if (strncmp(line, "OK ", 3) != 0)
+        {
+            printf("File not found on server\n");
+            close(socid);
+            return 1;
+        }
+
+        char *end;
+        long long size = strtoll(line + 3, &end, 10);
+
+        if (end == line + 3 || *end != '\0' || size < 0)
+        {
+            printf("Invalid file size from server\n");
+            close(socid);
+            return 1;
+        }
+
+        FILE *fp = fopen(filename, "wb");
+
+        if (fp == NULL)
+        {
+            perror("Cannot create local file");
+            close(socid);
+            return 1;
+        }
+
+        if (receive_file(socid, fp, size) < 0)
+        {
+            printf("File transfer incomplete\n");
+            fclose(fp);
+            remove(filename);
+            close(socid);
+            return 1;
+        }
+
+        if (fclose(fp) != 0)
+        {
+            perror("File write error");
+            close(socid);
+            return 1;
+        }
+
+        printf("File retrieved successfully (%lld bytes).\n", size);
+    }
+    else
+    {
+        /* Transfer a local file to the server. */
+        FILE *fp = fopen(filename, "rb");
+
+        if (fp == NULL)
+        {
+            printf("File does not exist locally\n");
+            close(socid);
+            return 1;
+        }
+
+        if (fseek(fp, 0, SEEK_END) != 0)
+        {
+            fclose(fp);
+            close(socid);
+            return 1;
+        }
+
+        long long size = (long long)ftell(fp);
+
+        if (size < 0 || fseek(fp, 0, SEEK_SET) != 0)
+        {
+            fclose(fp);
+            close(socid);
+            return 1;
+        }
+
+        snprintf(line, sizeof(line), "%lld\n", size);
+
+        if (send_all(socid, line, strlen(line)) < 0 ||
+            read_line(socid, line, sizeof(line)) < 0 ||
+            strcmp(line, "OK") != 0)
+        {
+            printf("Server cannot accept the file\n");
+            fclose(fp);
+            close(socid);
+            return 1;
+        }
+
+        char buffer[BUFFER_SIZE];
+        long long remaining = size;
+        int success = 1;
+
+        while (remaining > 0)
+        {
+            size_t amount = remaining > BUFFER_SIZE
+                            ? BUFFER_SIZE : (size_t)remaining;
+
+            size_t n = fread(buffer, 1, amount, fp);
+
+            if (n != amount || send_all(socid, buffer, n) < 0)
+            {
+                success = 0;
+                break;
+            }
+
+            remaining -= n;
+        }
+
+        fclose(fp);
+
+        if (!success ||
+            read_line(socid, line, sizeof(line)) < 0 ||
+            strcmp(line, "OK") != 0)
+        {
+            printf("File transfer failed\n");
+            close(socid);
+            return 1;
+        }
+
+        printf("File transferred successfully (%lld bytes).\n", size);
+    }
+
+    close(socid);
+    return 0;
+}
+
+server.c
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+#define PORT 5000
+#define BUFFER_SIZE 4096
+#define NAME_SIZE 256
+
+int send_all(int sock, const void *data, size_t size)
+{
+    const char *p = data;
+    size_t sent = 0;
+
+    while (sent < size)
+    {
+        ssize_t n = send(sock, p + sent, size - sent, 0);
+
+        if (n <= 0)
+            return -1;
+
+        sent += n;
+    }
+
+    return 0;
+}
+
+int recv_exact(int sock, void *data, size_t size)
+{
+    char *p = data;
+    size_t received = 0;
+
+    while (received < size)
+    {
+        ssize_t n = recv(sock, p + received,
+                         size - received, 0);
+
+        if (n <= 0)
+            return -1;
+
+        received += n;
+    }
+
+    return 0;
+}
+
+int read_line(int sock, char *buf, size_t size)
+{
+    size_t i = 0;
+    char c;
+
+    while (i < size - 1)
+    {
+        ssize_t n = recv(sock, &c, 1, 0);
+
+        if (n <= 0)
+            return -1;
+
+        if (c == '\n')
+            break;
+
+        buf[i++] = c;
+    }
+
+    buf[i] = '\0';
+    return 0;
+}
+
+/* Accept filenames only, not directory paths. */
+int valid_filename(const char *name)
+{
+    if (name[0] == '\0' || strcmp(name, ".") == 0 ||
+        strcmp(name, "..") == 0)
+        return 0;
+
+    if (strchr(name, '/') != NULL ||
+        strchr(name, '\\') != NULL)
+        return 0;
+
+    return 1;
+}
+
+int send_file(int sock, FILE *fp, long long size)
+{
+    char buffer[BUFFER_SIZE];
+
+    while (size > 0)
+    {
+        size_t amount = size > BUFFER_SIZE
+                        ? BUFFER_SIZE : (size_t)size;
+
+        size_t n = fread(buffer, 1, amount, fp);
+
+        if (n == 0 || send_all(sock, buffer, n) < 0)
+            return -1;
+
+        size -= n;
+    }
+
+    return 0;
+}
+
+void handle_client(int ac)
+{
+    char choice[16];
+    char filename[NAME_SIZE];
+    char size_text[64];
+
+    if (read_line(ac, choice, sizeof(choice)) < 0 ||
+        read_line(ac, filename, sizeof(filename)) < 0)
+        return;
+
+    if (!valid_filename(filename))
+    {
+        send_all(ac, "ERR\n", 4);
+        return;
+    }
+
+    if (strcmp(choice, "1") == 0)
+    {
+        /* Retrieve a file: server -> client */
+        FILE *fp = fopen(filename, "rb");
+
+        if (fp == NULL)
+        {
+            send_all(ac, "ERR\n", 4);
+            return;
+        }
+
+        if (fseek(fp, 0, SEEK_END) != 0)
+        {
+            fclose(fp);
+            send_all(ac, "ERR\n", 4);
+            return;
+        }
+
+        long long size = (long long)ftell(fp);
+
+        if (size < 0 || fseek(fp, 0, SEEK_SET) != 0)
+        {
+            fclose(fp);
+            send_all(ac, "ERR\n", 4);
+            return;
+        }
+
+        snprintf(size_text, sizeof(size_text),
+                 "OK %lld\n", size);
+
+        if (send_all(ac, size_text, strlen(size_text)) < 0)
+        {
+            fclose(fp);
+            return;
+        }
+
+        send_file(ac, fp, size);
+        fclose(fp);
+
+        printf("File sent to client: %s\n", filename);
+    }
+    else if (strcmp(choice, "2") == 0)
+    {
+        /* Receive a file: client -> server */
+        if (read_line(ac, size_text, sizeof(size_text)) < 0)
+            return;
+
+        char *end;
+        long long size = strtoll(size_text, &end, 10);
+
+        if (end == size_text || *end != '\0' || size < 0)
+        {
+            send_all(ac, "ERR\n", 4);
+            return;
+        }
+
+        FILE *fp = fopen(filename, "wb");
+
+        if (fp == NULL)
+        {
+            send_all(ac, "ERR\n", 4);
+            return;
+        }
+
+        /* Tell the client that the server is ready. */
+        if (send_all(ac, "OK\n", 3) < 0)
+        {
+            fclose(fp);
+            return;
+        }
+
+        char buffer[BUFFER_SIZE];
+        long long remaining = size;
+        int success = 1;
+
+        while (remaining > 0)
+        {
+            size_t amount = remaining > BUFFER_SIZE
+                            ? BUFFER_SIZE : (size_t)remaining;
+
+            if (recv_exact(ac, buffer, amount) < 0)
+            {
+                success = 0;
+                break;
+            }
+
+            if (fwrite(buffer, 1, amount, fp) != amount)
+            {
+                success = 0;
+                break;
+            }
+
+            remaining -= amount;
+        }
+
+        if (fclose(fp) != 0)
+            success = 0;
+
+        if (success)
+        {
+            send_all(ac, "OK\n", 3);
+            printf("File received from client: %s\n", filename);
+        }
+        else
+        {
+            remove(filename);
+            send_all(ac, "ERR\n", 4);
+        }
+    }
+    else
+    {
+        send_all(ac, "ERR\n", 4);
+    }
+}
+
+int main()
+{
+    int socid, ac;
+    struct sockaddr_in addr;
+
+    signal(SIGCHLD, SIG_IGN);
+
+    socid = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (socid < 0)
+    {
+        perror("Socket");
+        return 1;
+    }
+
+    int opt = 1;
+    setsockopt(socid, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(socid, (struct sockaddr *)&addr,
+             sizeof(addr)) < 0)
+    {
+        perror("Bind");
+        close(socid);
+        return 1;
+    }
+
+    if (listen(socid, 5) < 0)
+    {
+        perror("Listen");
+        close(socid);
+        return 1;
+    }
+
+    printf("Server listening on port %d...\n", PORT);
+
+    while (1)
+    {
+        ac = accept(socid, NULL, NULL);
+
+        if (ac < 0)
+        {
+            perror("Accept");
+            continue;
+        }
+
+        pid_t p = fork();
+
+        if (p < 0)
+        {
+            perror("Fork");
+            close(ac);
+            continue;
+        }
+
+        if (p == 0)
+        {
+            close(socid);
+            handle_client(ac);
+            close(ac);
+            _exit(0);
+        }
+
+        close(ac);
+    }
+
+    close(socid);
+    return 0;
+}
+
+self:
+
+Self Qn:
+
+TCP-based Online Examination Management System
+
+//server.c
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 5000
+#define SIZE 2048
+#define USERS_FILE "users.txt"
+#define RESULTS_FILE "results.txt"
+#define LOG_FILE "exam.log"
+
+pthread_mutex_t fileLock = PTHREAD_MUTEX_INITIALIZER;
+
+struct Client
+{
+    int socket;
+    char ip[INET_ADDRSTRLEN];
+};
+
+struct Question
+{
+    char question[150];
+    char option[4][60];
+    int answer;
+};
+
+struct Question questions[5] =
+{
+    {
+        "Which language is used for system programming?",
+        {"HTML", "C", "CSS", "XML"}, 2
+    },
+    {
+        "Which data structure follows FIFO?",
+        {"Stack", "Tree", "Queue", "Graph"}, 3
+    },
+    {
+        "Which protocol provides reliable delivery?",
+        {"UDP", "IP", "TCP", "ARP"}, 3
+    },
+    {
+        "Which is an operating system?",
+        {"Linux", "MySQL", "HTML", "Python"}, 1
+    },
+    {
+        "Which data structure follows LIFO?",
+        {"Queue", "Stack", "Array", "Graph"}, 2
+    }
+};
+
+/* Send the complete message */
+int sendAll(int sock, const char *data, int length)
+{
+    int sent = 0;
+    int n;
+
+    while (sent < length)
+    {
+        n = send(sock, data + sent, length - sent,
+                 MSG_NOSIGNAL);
+
+        if (n <= 0)
+            return -1;
+
+        sent += n;
+    }
+
+    return sent;
+}
+
+/* Receive a newline-terminated request */
+int receiveLine(int sock, char *buffer, int size)
+{
+    int i = 0;
+    char ch;
+    int n;
+
+    while (i < size - 1)
+    {
+        n = recv(sock, &ch, 1, 0);
+
+        if (n <= 0)
+            return n;
+
+        if (ch == '\n')
+            break;
+
+        if (ch != '\r')
+            buffer[i++] = ch;
+    }
+
+    buffer[i] = '\0';
+    return i;
+}
+
+/* Send a response ending with END */
+int sendResponse(int sock, const char *message)
+{
+    if (sendAll(sock, message, strlen(message)) < 0)
+        return -1;
+
+    if (sendAll(sock, "\nEND\n", 5) < 0)
+        return -1;
+
+    return 0;
+}
+
+/* Create sample accounts if users.txt does not exist */
+void initializeUsers()
+{
+    FILE *fp = fopen(USERS_FILE, "r");
+
+    if (fp != NULL)
+    {
+        fclose(fp);
+        return;
+    }
+
+    fp = fopen(USERS_FILE, "w");
+
+    if (fp == NULL)
+    {
+        perror("Cannot create users.txt");
+        exit(1);
+    }
+
+    fprintf(fp, "alice pass123\n");
+    fprintf(fp, "bob pass123\n");
+
+    fclose(fp);
+}
+
+/* Authenticate a student */
+int authenticate(const char *username, const char *password)
+{
+    FILE *fp;
+    char user[32], pass[32];
+    int valid = 0;
+
+    pthread_mutex_lock(&fileLock);
+
+    fp = fopen(USERS_FILE, "r");
+
+    if (fp != NULL)
+    {
+        while (fscanf(fp, "%31s %31s", user, pass) == 2)
+        {
+            if (strcmp(user, username) == 0 &&
+                strcmp(pass, password) == 0)
+            {
+                valid = 1;
+                break;
+            }
+        }
+
+        fclose(fp);
+    }
+
+    pthread_mutex_unlock(&fileLock);
+
+    return valid;
+}
+
+/* Record client activity with timestamp */
+void logActivity(const char *ip, const char *username,
+                 const char *activity)
+{
+    FILE *fp;
+    time_t now = time(NULL);
+    struct tm *tmInfo;
+    char timestamp[30];
+
+    tmInfo = localtime(&now);
+
+    if (tmInfo != NULL)
+        strftime(timestamp, sizeof(timestamp),
+                 "%Y-%m-%d %H:%M:%S", tmInfo);
+    else
+        strcpy(timestamp, "Unknown time");
+
+    pthread_mutex_lock(&fileLock);
+
+    fp = fopen(LOG_FILE, "a");
+
+    if (fp != NULL)
+    {
+        fprintf(fp, "%s | IP:%s | User:%s | %s\n",
+                timestamp, ip, username, activity);
+
+        fclose(fp);
+    }
+
+    pthread_mutex_unlock(&fileLock);
+}
+
+/* Send all examination questions */
+void sendQuestions(int client)
+{
+    char response[SIZE];
+    int i, j;
+
+    response[0] = '\0';
+
+    for (i = 0; i < 5; i++)
+    {
+        char line[300];
+
+        snprintf(line, sizeof(line),
+                 "Q%d: %s\n",
+                 i + 1, questions[i].question);
+
+        strncat(response, line,
+                sizeof(response) - strlen(response) - 1);
+
+        for (j = 0; j < 4; j++)
+        {
+            snprintf(line, sizeof(line),
+                     "%d. %s\n",
+                     j + 1, questions[i].option[j]);
+
+            strncat(response, line,
+                    sizeof(response) - strlen(response) - 1);
+        }
+
+        strncat(response, "\n",
+                sizeof(response) - strlen(response) - 1);
+    }
+
+    sendResponse(client, response);
+}
+
+/* Save the student's result */
+void saveResult(const char *username, int score)
+{
+    FILE *fp;
+    time_t now = time(NULL);
+    struct tm *tmInfo;
+    char timestamp[30];
+
+    tmInfo = localtime(&now);
+
+    if (tmInfo != NULL)
+        strftime(timestamp, sizeof(timestamp),
+                 "%Y-%m-%d %H:%M:%S", tmInfo);
+    else
+        strcpy(timestamp, "Unknown time");
+
+    pthread_mutex_lock(&fileLock);
+
+    fp = fopen(RESULTS_FILE, "a");
+
+    if (fp != NULL)
+    {
+        fprintf(fp, "%s %d/5 %s\n",
+                username, score, timestamp);
+
+        fclose(fp);
+    }
+
+    pthread_mutex_unlock(&fileLock);
+}
+
+/* Display the latest saved result for a student */
+void viewScore(int client, const char *username)
+{
+    FILE *fp;
+    char user[32], score[16], date[30], clockTime[30];
+    char response[SIZE] = "No examination result found";
+    int found = 0;
+
+    pthread_mutex_lock(&fileLock);
+
+    fp = fopen(RESULTS_FILE, "r");
+
+    if (fp != NULL)
+    {
+        while (fscanf(fp, "%31s %15s %29s %29s",
+                      user, score, date, clockTime) == 4)
+        {
+            if (strcmp(user, username) == 0)
+            {
+                snprintf(response, sizeof(response),
+                         "Student: %s\nScore: %s\nDate: %s %s",
+                         user, score, date, clockTime);
+
+                found = 1;
+            }
+        }
+
+        fclose(fp);
+    }
+
+    pthread_mutex_unlock(&fileLock);
+
+    if (!found)
+        strcpy(response, "No examination result found");
+
+    sendResponse(client, response);
+}
+
+/* Handle one student connection */
+void *handleClient(void *arg)
+{
+    struct Client *info = (struct Client *)arg;
+
+    int client = info->socket;
+    char ip[INET_ADDRSTRLEN];
+
+    snprintf(ip, sizeof(ip), "%s", info->ip);
+    free(info);
+
+    char request[SIZE];
+    char username[32] = "";
+    char password[32];
+    char command[20];
+    char response[SIZE];
+
+    int loggedIn = 0;
+    int submitted = 0;
+    int answers[5];
+    int score, i, n;
+
+    printf("Client connected: %s\n", ip);
+
+    while (1)
+    {
+        n = receiveLine(client, request, sizeof(request));
+
+        if (n <= 0)
+            break;
+
+        printf("[%s] Request: %s\n", ip, request);
+
+        if (sscanf(request, "%19s", command) != 1)
+        {
+            sendResponse(client, "ERROR: Empty request");
+            continue;
+        }
+
+        /* Login */
+        if (strcmp(command, "LOGIN") == 0)
+        {
+            if (loggedIn)
+            {
+                sendResponse(client, "Already logged in");
+                continue;
+            }
+
+            if (sscanf(request, "%19s %31s %31s",
+                       command, username, password) != 3)
+            {
+                sendResponse(client,
+                             "ERROR: Enter username and password");
+                continue;
+            }
+
+            if (authenticate(username, password))
+            {
+                loggedIn = 1;
+
+                sendResponse(client, "LOGIN SUCCESSFUL");
+
+                logActivity(ip, username, "Login successful");
+
+                printf("Student %s logged in\n", username);
+            }
+            else
+            {
+                username[0] = '\0';
+
+                sendResponse(client,
+                             "ERROR: Invalid username or password");
+
+                logActivity(ip, "Unknown", "Failed login");
+            }
+
+            continue;
+        }
+
+        /* Every other command requires login */
+        if (!loggedIn)
+        {
+            sendResponse(client, "ERROR: Please login first");
+            continue;
+        }
+
+        /* Retrieve questions */
+        if (strcmp(command, "QUESTIONS") == 0)
+        {
+            if (submitted)
+            {
+                sendResponse(client,
+                             "You have already submitted the examination");
+                continue;
+            }
+
+            sendQuestions(client);
+            logActivity(ip, username, "Viewed examination questions");
+        }
+
+        /* Submit answers */
+        else if (strcmp(command, "SUBMIT") == 0)
+        {
+            if (submitted)
+            {
+                sendResponse(client,
+                             "ERROR: Examination already submitted");
+                continue;
+            }
+
+            if (sscanf(request,
+                       "%19s %d %d %d %d %d",
+                       command,
+                       &answers[0], &answers[1],
+                       &answers[2], &answers[3],
+                       &answers[4]) != 6)
+            {
+                sendResponse(client,
+                             "ERROR: Submit exactly five answers");
+                continue;
+            }
+
+            for (i = 0; i < 5; i++)
+            {
+                if (answers[i] < 1 || answers[i] > 4)
+                    break;
+            }
+
+            if (i != 5)
+            {
+                sendResponse(client,
+                             "ERROR: Each answer must be from 1 to 4");
+                continue;
+            }
+
+            score = 0;
+
+            for (i = 0; i < 5; i++)
+            {
+                if (answers[i] == questions[i].answer)
+                    score++;
+            }
+
+            saveResult(username, score);
+            submitted = 1;
+
+            snprintf(response, sizeof(response),
+                     "EXAMINATION SUBMITTED\nStudent: %s\nFinal Score: %d/5\nPercentage: %d%%",
+                     username, score, score * 20);
+
+            sendResponse(client, response);
+
+            logActivity(ip, username, "Submitted examination");
+
+            printf("Student %s scored %d/5\n",
+                   username, score);
+        }
+
+        /* View result */
+        else if (strcmp(command, "SCORE") == 0)
+        {
+            viewScore(client, username);
+            logActivity(ip, username, "Viewed examination result");
+        }
+
+        /* Logout */
+        else if (strcmp(command, "LOGOUT") == 0)
+        {
+            sendResponse(client, "Logout successful");
+
+            logActivity(ip, username, "Logout");
+            break;
+        }
+
+        else
+        {
+            sendResponse(client, "ERROR: Invalid command");
+            logActivity(ip, username, "Invalid request");
+        }
+    }
+
+    if (loggedIn)
+        logActivity(ip, username, "Client disconnected");
+
+    printf("Client disconnected: %s\n", ip);
+
+    close(client);
+    return NULL;
+}
+
+int main()
+{
+    int serverSock;
+    struct sockaddr_in serverAddr, clientAddr;
+    socklen_t addrLen;
+
+    pthread_t thread;
+    struct Client *info;
+
+    int clientSock;
+
+    serverSock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (serverSock < 0)
+    {
+        perror("Socket creation failed");
+        return 1;
+    }
+
+    int opt = 1;
+
+    setsockopt(serverSock, SOL_SOCKET, SO_REUSEADDR,
+               &opt, sizeof(opt));
+
+    memset(&serverAddr, 0, sizeof(serverAddr));
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_port = htons(PORT);
+
+    if (bind(serverSock, (struct sockaddr *)&serverAddr,
+             sizeof(serverAddr)) < 0)
+    {
+        perror("Bind failed");
+        close(serverSock);
+        return 1;
+    }
+
+    if (listen(serverSock, 10) < 0)
+    {
+        perror("Listen failed");
+        close(serverSock);
+        return 1;
+    }
+
+    initializeUsers();
+
+    printf("Concurrent Examination TCP Server\n");
+    printf("Listening on port %d\n", PORT);
+
+    while (1)
+    {
+        addrLen = sizeof(clientAddr);
+
+        clientSock = accept(serverSock,
+                            (struct sockaddr *)&clientAddr,
+                            &addrLen);
+
+        if (clientSock < 0)
+        {
+            perror("Accept failed");
+            continue;
+        }
+
+        info = malloc(sizeof(struct Client));
+
+        if (info == NULL)
+        {
+            close(clientSock);
+            continue;
+        }
+
+        info->socket = clientSock;
+
+        if (inet_ntop(AF_INET, &clientAddr.sin_addr,
+                      info->ip, sizeof(info->ip)) == NULL)
+        {
+            strcpy(info->ip, "Unknown");
+        }
+
+        if (pthread_create(&thread, NULL,
+                           handleClient, info) != 0)
+        {
+            perror("Thread creation failed");
+            close(clientSock);
+            free(info);
+            continue;
+        }
+
+        pthread_detach(thread);
+    }
+
+    close(serverSock);
+    pthread_mutex_destroy(&fileLock);
+
+    return 0;
+}
+
+
+=======================================================================
+//client.c
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 5000
+#define SIZE 2048
+
+/* Send all bytes */
+int sendAll(int sock, const char *data, int length)
+{
+    int sent = 0;
+    int n;
+
+    while (sent < length)
+    {
+        n = send(sock, data + sent, length - sent, 0);
+
+        if (n <= 0)
+            return -1;
+
+        sent += n;
+    }
+
+    return sent;
+}
+
+/* Send a newline-terminated request */
+int sendRequest(int sock, const char *request)
+{
+    if (sendAll(sock, request, (int)strlen(request)) < 0)
+        return -1;
+
+    if (sendAll(sock, "\n", 1) < 0)
+        return -1;
+
+    return 0;
+}
+
+/* Receive one line */
+int receiveLine(int sock, char *buffer, int size)
+{
+    int i = 0;
+    int n;
+    char ch;
+
+    while (i < size - 1)
+    {
+        n = recv(sock, &ch, 1, 0);
+
+        if (n <= 0)
+            return n;
+
+        if (ch == '\n')
+            break;
+
+        if (ch != '\r')
+            buffer[i++] = ch;
+    }
+
+    buffer[i] = '\0';
+
+    return i;
+}
+
+/* Receive response until END */
+int receiveResponse(int sock)
+{
+    char line[SIZE];
+    int n;
+
+    while (1)
+    {
+        n = receiveLine(sock, line, sizeof(line));
+
+        if (n <= 0)
+        {
+            printf("Server disconnected.\n");
+            return 0;
+        }
+
+        if (strcmp(line, "END") == 0)
+            return 1;
+
+        printf("%s\n", line);
+    }
+}
+
+int main()
+{
+    int sockfd;
+    struct sockaddr_in serverAddr;
+
+    char username[32];
+    char password[32];
+    char request[SIZE];
+
+    int choice;
+    int answer;
+    int i;
+    int loggedIn = 0;
+
+    /* Create TCP socket */
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (sockfd < 0)
+    {
+        perror("Socket creation failed");
+        return 1;
+    }
+
+    memset(&serverAddr, 0, sizeof(serverAddr));
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(PORT);
+
+    if (inet_pton(AF_INET, "127.0.0.1",
+                  &serverAddr.sin_addr) != 1)
+    {
+        printf("Invalid server address.\n");
+        close(sockfd);
+        return 1;
+    }
+
+    /* Connect to server */
+    if (connect(sockfd, (struct sockaddr *)&serverAddr,
+                sizeof(serverAddr)) < 0)
+    {
+        perror("Connection failed");
+        close(sockfd);
+        return 1;
+    }
+
+    printf("Connected to Examination Server\n");
+
+    /* Student login */
+    printf("\n===== STUDENT LOGIN =====\n");
+
+    printf("Username: ");
+
+    if (scanf("%31s", username) != 1)
+    {
+        close(sockfd);
+        return 1;
+    }
+
+    printf("Password: ");
+
+    if (scanf("%31s", password) != 1)
+    {
+        close(sockfd);
+        return 1;
+    }
+
+    snprintf(request, sizeof(request),
+             "LOGIN %s %s", username, password);
+
+    if (sendRequest(sockfd, request) < 0)
+    {
+        printf("Failed to send login request.\n");
+        close(sockfd);
+        return 1;
+    }
+
+    /* Check login response */
+    {
+        char line[SIZE];
+        int n;
+        int success = 0;
+
+        while (1)
+        {
+            n = receiveLine(sockfd, line, sizeof(line));
+
+            if (n <= 0)
+            {
+                printf("Server disconnected.\n");
+                close(sockfd);
+                return 1;
+            }
+
+            if (strcmp(line, "END") == 0)
+                break;
+
+            printf("%s\n", line);
+
+            if (strcmp(line, "LOGIN SUCCESSFUL") == 0)
+                success = 1;
+        }
+
+        if (!success)
+        {
+            printf("Login failed. Exiting.\n");
+            close(sockfd);
+            return 1;
+        }
+    }
+
+    loggedIn = 1;
+
+    /* Examination menu */
+    while (loggedIn)
+    {
+        printf("\n===== ONLINE EXAMINATION =====\n");
+        printf("1. View questions and take exam\n");
+        printf("2. View final score\n");
+        printf("3. Logout\n");
+        printf("Enter choice: ");
+
+        if (scanf("%d", &choice) != 1)
+            break;
+
+        if (choice == 1)
+        {
+            /* Request questions */
+            if (sendRequest(sockfd, "QUESTIONS") < 0)
+            {
+                printf("Failed to send request.\n");
+                break;
+            }
+
+            if (!receiveResponse(sockfd))
+                break;
+
+            printf("\nEnter answers from 1 to 4.\n");
+
+            /*
+               Build the submission request directly.
+               Maximum command length is very small:
+               "SUBMIT " + five single-digit answers.
+            */
+            {
+                char submit[64];
+                int used;
+
+                used = snprintf(submit, sizeof(submit), "SUBMIT");
+
+                if (used < 0 || used >= (int)sizeof(submit))
+                {
+                    printf("Unable to prepare submission.\n");
+                    break;
+                }
+
+                for (i = 0; i < 5; i++)
+                {
+                    while (1)
+                    {
+                        printf("Answer for question %d: ", i + 1);
+
+                        if (scanf("%d", &answer) != 1)
+                        {
+                            printf("Invalid input.\n");
+                            close(sockfd);
+                            return 1;
+                        }
+
+                        if (answer >= 1 && answer <= 4)
+                            break;
+
+                        printf("Enter a number from 1 to 4.\n");
+                    }
+
+                    used = snprintf(submit + strlen(submit),
+                                    sizeof(submit) - strlen(submit),
+                                    " %d", answer);
+
+                    if (used < 0 ||
+                        (size_t)used >= sizeof(submit) -
+                                        strlen(submit))
+                    {
+                        printf("Unable to prepare submission.\n");
+                        break;
+                    }
+                }
+
+                if (i != 5)
+                    break;
+
+                /* Submit answers */
+                if (sendRequest(sockfd, submit) < 0)
+                {
+                    printf("Failed to submit answers.\n");
+                    break;
+                }
+
+                if (!receiveResponse(sockfd))
+                    break;
+            }
+        }
+        else if (choice == 2)
+        {
+            if (sendRequest(sockfd, "SCORE") < 0)
+            {
+                printf("Failed to request score.\n");
+                break;
+            }
+
+            if (!receiveResponse(sockfd))
+                break;
+        }
+        else if (choice == 3)
+        {
+            if (sendRequest(sockfd, "LOGOUT") == 0)
+                receiveResponse(sockfd);
+
+            loggedIn = 0;
+        }
+        else
+        {
+            printf("Invalid choice. Try again.\n");
+        }
+    }
+
+    close(sockfd);
+
+    printf("Client closed.\n");
+
+    return 0;
+}
